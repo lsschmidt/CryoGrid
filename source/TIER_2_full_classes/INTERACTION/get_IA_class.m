@@ -112,6 +112,13 @@ if strcmp(below_class, 'GLACIER_freeW_seb_snow')
     below_class = 'GROUND_freeW_seb_snow';
 end
 
+if strcmp(above_class, 'SNOW_crocus_bucketW_glac_seb')
+    above_class = 'SNOW_crocus_bucketW_seb';
+end
+if strcmp(below_class, 'SNOW_crocus_bucketW_glac_seb')
+    below_class = 'SNOW_crocus_bucketW_seb';
+end
+
 %set dummy, so that it doesn't crash
 if strcmp(above_class, 'GROUND_multi_tile2')
     above_class2 = above_class;

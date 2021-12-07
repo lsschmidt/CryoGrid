@@ -398,6 +398,50 @@ classdef WATER_FLUXES < BASE
             ground.TEMP.d_water_out = d_water_out;
         end
         
+        %bucketW hydrological scheme for SNOW classes - small update for
+        %glac
+        function ground = get_derivative_water_SNOW2(ground) %adapts the fluxes automatically so that no checks are necessary when advancing the prognostic variable
+            remaining_pore_space = ground.STATVAR.layerThick.* ground.STATVAR.area - ground.STATVAR.mineral - ground.STATVAR.organic - ground.STATVAR.ice;
+            %saturation = (ground.STATVAR.waterIce - ground.PARA.field_capacity .* remaining_pore_space) ./ ...
+            %    (ground.STATVAR.layerThick.*ground.STATVAR.area - remaining_pore_space); 
+            saturation = (ground.STATVAR.water - ground.PARA.field_capacity .* remaining_pore_space) ./ ...
+                (remaining_pore_space - ground.PARA.field_capacity .* remaining_pore_space); 
+            
+            saturation = max(0,min(1,saturation)); % 0 water at field capacity, 1: water at saturation
+            saturation(saturation >= (1 - 1e-9)) = 1;
+            
+            %outflow
+            d_water_out = ground.STATVAR.hydraulicConductivity .* ground.STATVAR.area; % area cancels out; make this depended on both involved cells?
+            d_water_out = d_water_out .* reduction_factor_out(saturation, ground); %this is positive when flowing out
+            d_water_out(end,1) = 0; % lower boundary handled elsewhere
+            %d_water_out(end,1) = -ground.TEMP.F_lb_water; %positive
+            
+            %inflow
+            d_water_in = d_water_out .*0;
+            d_water_in(2:end) = d_water_out(1:end-1);
+            d_water_in = d_water_in .* reduction_factor_in(saturation, ground);
+            d_water_in(ground.STATVAR.target_density > 0.9) = 0; %impermeable when density higher than 830 %max(0, min(d_water_in, ground.STATVAR.layerThick.* ground.STATVAR.area  - ground.STATVAR.waterIce));
+            d_water_in = max(0, min(d_water_in, (ground.STATVAR.layerThick.* ground.STATVAR.area  - ground.STATVAR.waterIce)));
+
+            %d_water_in(1) = ground.TEMP.F_ub_water; %already checked in UB, that space is available
+            
+            %readjust outflow
+            d_water_out(1:end-1) = d_water_in(2:end); %reduce outflow if inflow is impossible
+            
+            %energy advection
+            d_water_out_energy = d_water_out .* ground.CONST.c_w .* ground.STATVAR.T;
+            d_water_in_energy = d_water_out.*0;
+            d_water_in_energy(2:end,1) = d_water_out_energy(1:end-1,1);
+            %d_water_in_energy(1) = ground.TEMP.F_ub_water_energy;
+            %d_water_out_energy(end) = -ground.TEMP.F_lb_water_energy;
+            
+            %sum up
+            ground.TEMP.d_water = ground.TEMP.d_water - d_water_out + d_water_in;
+            ground.TEMP.d_water_energy = ground.TEMP.d_water_energy - d_water_out_energy + d_water_in_energy;
+            
+            ground.TEMP.d_water_in = d_water_in; % at this stage nice-to-have variables, good for troubleshooting
+            ground.TEMP.d_water_out = d_water_out;
+        end
      
         %Richards equation         
         function ground = get_derivative_water_RichardsEq(ground) %adapts the fluxes automatically so that no checks are necessary when advancing the prognostic variable
