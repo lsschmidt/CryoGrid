@@ -23,6 +23,8 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
             
             ground.PARA.dt_max = [];  %maximum possible timestep [sec]
             ground.PARA.dE_max = [];  %maximum possible energy change per timestep [J/m3]
+            
+            ground.PARA.constant_ice = [];
         end
         
         function ground = provide_STATVAR(ground)
@@ -76,6 +78,9 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
         end
         
         function ground = convert_units(ground, tile)
+                ground.STATVAR.mineral = ground.STATVAR.T .* 0;
+                ground.STATVAR.organic = ground.STATVAR.T .* 0;
+
                 unit_converter = str2func(tile.PARA.unit_conversion_class);
                 unit_converter = unit_converter();
                 ground = convert_normal(unit_converter, ground, tile);
@@ -97,13 +102,16 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
             ground.STATVAR.Qh = 0;
             ground.STATVAR.Qe = 0;
             ground.STATVAR.runoff = 0;
+            ground.STATVAR.smb = 0; 
+            ground.STATVAR.sublimation = 0; 
             
             ground.TEMP.d_energy = ground.STATVAR.energy.*0;
             ground.TEMP.d_water = ground.STATVAR.energy.*0;
             ground.TEMP.d_water_ET = ground.STATVAR.energy.*0;
             ground.TEMP.d_water_energy = ground.STATVAR.energy.*0;
             ground.TEMP.d_water_ET_energy = ground.STATVAR.energy.*0;
-
+            ground.TEMP.sublimation = 0;
+            ground.TEMP.sublimation_energy = 0; 
         end
         
         function ground = finalize_init2(ground, tile)
@@ -142,18 +150,30 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
         end
         
         function timestep = get_timestep(ground, tile)
-           timestep = get_timestep_heat_coduction(ground);
+            %at maximum timestep maximum half the cell is melted under melting conditions, otherwise normal heat conduction timestep
+            melt_fraction = 0.5; 
+            timestep = min(double(ground.TEMP.d_energy>0 & ground.STATVAR.energy >= - 0.95.* ground.STATVAR.ice.*ground.CONST.L_f) .* melt_fraction .*  (-ground.STATVAR.energy ./ ground.TEMP.d_energy) + ...
+                double(ground.TEMP.d_energy<0 & ground.STATVAR.energy >= - 0.95.* ground.STATVAR.ice.*ground.CONST.L_f) .*melt_fraction .*  ((-ground.STATVAR.ice.*ground.CONST.L_f -ground.STATVAR.energy) ./ ground.TEMP.d_energy) + ...
+                double( ground.STATVAR.energy < - 0.95.* ground.STATVAR.ice.*ground.CONST.L_f) .* ground.CONST.c_i .* (ground.STATVAR.ice./ground.STATVAR.layerThick./ ground.STATVAR.area)  ./ (abs(ground.TEMP.d_energy) ./ ground.STATVAR.layerThick./ ground.STATVAR.area));
+            timestep(isnan(timestep)) = ground.PARA.dt_max;
+            timestep = min(timestep,ground.PARA.dt_max); 
         end
         
         function ground = advance_prognostic(ground, tile) 
             timestep = tile.timestep;
             %energy
             ground.STATVAR.energy = ground.STATVAR.energy + timestep .* ground.TEMP.d_energy;
+            ground.STATVAR.energy(1) = ground.STATVAR.energy(1) + timestep .* ground.TEMP.sublimation_energy; %add sublimation energy
             ground.STATVAR.energy = ground.STATVAR.energy + timestep .* ground.TEMP.d_water_energy; %add energy from water advection
             %water
             ground.STATVAR.waterIce = ground.STATVAR.waterIce + timestep .* ground.TEMP.d_water; 
-            ground.STATVAR.layerThick = ground.STATVAR.layerThick + timestep .* ground.TEMP.d_water ./ ground.STATVAR.area; 
-            
+            ground.STATVAR.layerThick = ground.STATVAR.layerThick + timestep .* ground.TEMP.d_water ./ ground.STATVAR.area(1,1); 
+            ground.STATVAR.waterIce(1) = ground.STATVAR.waterIce(1) + timestep .* ground.TEMP.sublimation;
+            ground.STATVAR.layerThick(1) = ground.STATVAR.layerThick(1) + timestep .* ground.TEMP.sublimation ./ ground.STATVAR.area(1,1);
+            %smb
+            ground.STATVAR.sublimation = ground.STATVAR.sublimation + timestep .* ground.TEMP.sublimation;
+            ground.STATVAR.smb = ground.STATVAR.smb +  timestep.*ground.TEMP.F_water .* ground.STATVAR.area(1,1) + timestep .* ground.TEMP.sublimation; 
+
         end
         
         function ground = compute_diagnostic_first_cell(ground, tile)
@@ -165,17 +185,13 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
             
             ground = get_T_water_freeW(ground);
             
-            ground.STATVAR.runoff = ground.STATVAR.water;
+            ground.STATVAR.runoff = sum(ground.STATVAR.water);
             ground.STATVAR.waterIce = ground.STATVAR.waterIce - ground.STATVAR.water;
             ground.STATVAR.waterIce = max(0, ground.STATVAR.waterIce);
             ground.STATVAR.water = ground.STATVAR.water .* 0;
             
             ground.STATVAR.layerThick = (ground.STATVAR.waterIce + ground.STATVAR.organic + ground.STATVAR.mineral) ./ ground.STATVAR.area;
             
-            %ground.STATVAR.melt = ground.STATVAR.melt + max(0,sum(ground.STATVAR.water) - ground.STATVAR.precip);
-            
-           % runoff = ground.STATVAR.water;%all water runs off immediately. Could change w. runoff timescale later - *(ground.TEMP.timestep/86400)/(0.33+25*exp(-140*ground.TEMP.grad));
-           
             ground = modify_grid(ground);
             ground = get_T_water_freeW(ground);
                         
@@ -186,6 +202,8 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
             ground.TEMP.d_water_ET = ground.STATVAR.energy.*0;
             ground.TEMP.d_water_energy = ground.STATVAR.energy.*0;
             ground.TEMP.d_water_ET_energy = ground.STATVAR.energy.*0;
+            ground.TEMP.sublimation_energy = 0; 
+            ground.TEMP.sublimation = 0; 
         end
         
         function ground = check_trigger(ground, tile)
@@ -204,22 +222,24 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
             ground.TEMP.F_ub = (forcing.TEMP.Sin + forcing.TEMP.Lin - ground.STATVAR.Lout - ground.STATVAR.Sout - ground.STATVAR.Qh - ground.STATVAR.Qe) .* ground.STATVAR.area(1);
             ground.TEMP.d_energy(1) = ground.TEMP.d_energy(1) + ground.TEMP.F_ub;
 
+            ground.TEMP.sublimation = -ground.STATVAR.Qe ./(ground.CONST.rho_w .* ground.CONST.L_s) .* ground.STATVAR.area(1);
+            ground.TEMP.sublimation_energy =  ground.TEMP.sublimation .* (ground.STATVAR.T(1) .* ground.CONST.c_i - ground.CONST.L_f);
+
         end
         
         
         function ground = modify_grid(ground)
-          % divide mass onto predetermined grid of constant ice fraction (+- 10 %)
+% divide mass onto predetermined grid of constant ice fraction (+- 10 %)
 
-          if ground.STATVAR.ice(1) < 0.99*ground.PARA.target_layerThick(1) % move up mass
+          if ground.STATVAR.ice(1) < 0.9*ground.PARA.target_layerThick(1) % move up mass
                     sf = (ground.PARA.target_layerThick(1) - ground.STATVAR.ice(1))./ground.STATVAR.ice;
                                      
-                    ground.STATVAR.waterIce = ground.STATVAR.waterIce + [ground.STATVAR.waterIce(2:end).*sf(2:end); 0] - [0; ground.STATVAR.waterIce(2:end).*sf(2:end)];
-                    ground.STATVAR.energy = ground.STATVAR.energy + [ground.STATVAR.energy(2:end).*sf(2:end); 0] - [0; ground.STATVAR.energy(2:end).*sf(2:end)]; 
-                    ground.STATVAR.layerThick = ground.STATVAR.layerThick + [ground.STATVAR.layerThick(2:end).*sf(2:end); 0] - [0; ground.STATVAR.layerThick(2:end).*sf(2:end)];
+                    ground.STATVAR.waterIce = ground.STATVAR.waterIce + [ground.STATVAR.waterIce(2:end).*sf(2:end); 0] - [0; ground.STATVAR.waterIce(2:end-1).*sf(2:end-1); 0];
+                    ground.STATVAR.energy = ground.STATVAR.energy + [ground.STATVAR.energy(2:end).*sf(2:end); 0] - [0; ground.STATVAR.energy(2:end-1).*sf(2:end-1); 0]; 
+                    ground.STATVAR.layerThick = ground.STATVAR.layerThick + [ground.STATVAR.layerThick(2:end).*sf(2:end); 0] - [0; ground.STATVAR.layerThick(2:end-1).*sf(2:end-1); 0];
 
-                    ground.STATVAR.mineral = ground.STATVAR.mineral + [ground.STATVAR.mineral(2:end).*sf(2:end); 0] - [0; ground.STATVAR.mineral(2:end).*sf(2:end)];
-                    ground.STATVAR.organic = ground.STATVAR.organic + [ground.STATVAR.organic(2:end).*sf(2:end); 0] - [0; ground.STATVAR.organic(2:end).*sf(2:end)]; 
-                   % ground.STATVAR.air = ground.STATVAR.air + [ground.STATVAR.air(2:end).*sf(2:end); 0] - [0; ground.STATVAR.air(2:end).*sf(2:end)]; 
+                    ground.STATVAR.mineral = ground.STATVAR.mineral + [ground.STATVAR.mineral(2:end).*sf(2:end); 0] - [0; ground.STATVAR.mineral(2:end-1).*sf(2:end-1); 0];
+                    ground.STATVAR.organic = ground.STATVAR.organic + [ground.STATVAR.organic(2:end).*sf(2:end); 0] - [0; ground.STATVAR.organic(2:end-1).*sf(2:end-1); 0]; 
 
           end
           
@@ -243,13 +263,11 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
                           ground.STATVAR.mineral(i) = sf2.*ground.STATVAR.mineral(i);
                           ground.STATVAR.organic(i+1) = sf1.*ground.STATVAR.organic(i)+ground.STATVAR.organic(i+1);
                           ground.STATVAR.organic(i) = sf2.*ground.STATVAR.organic(i);
- %                         ground.STATVAR.air(i+1) = sf1.*ground.STATVAR.air(i)+ground.STATVAR.air(i+1);
-%                           ground.STATVAR.air(i) = sf2.*ground.STATVAR.air(i);
                       end
                   end
                 end
          
-           end
+          end
 
       end
         
@@ -260,6 +278,11 @@ classdef GLACIER_freeW_seb < SEB & HEAT_CONDUCTION & WATER_FLUXES & HEAT_FLUXES_
         end
         
         %-----LATERAL-------------------
+
+        %-----LAT_REMOVE_SURFACE_WATER-----
+        function ground = lateral_push_water_overland_flow_SNOW_crocus2(ground, lateral)
+            ground = lateral_push_water_overland_flow_SNOW_crocus2(ground, lateral);
+        end
         
 %         %-----LAT_REMOVE_SURFACE_WATER-----
 %         function ground = lateral_push_remove_surfaceWater(ground, lateral)
